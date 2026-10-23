@@ -1,9 +1,11 @@
 "use client"
 
-import { FileText, Settings2, Sparkles, Trash2 } from "lucide-react"
-import { useId, useState } from "react"
+import { FileText, Filter, Settings2, Sparkles, Trash2 } from "lucide-react"
+import { PDFDocument } from "pdf-lib"
+import { useId, useMemo, useState } from "react"
 import { inferPdfNumber } from "@/lib/quiz/codes"
 import { clearFinishedJobs, useJobs } from "@/lib/quiz/jobs"
+import { parseExcludedPages } from "@/lib/quiz/pdf-split"
 import { createSimulation, runAiExtraction } from "@/lib/quiz/pipeline"
 import { DEFAULT_EXTRACT_PROMPT, DEFAULT_SETTINGS, MODEL_SUGGESTIONS } from "@/lib/quiz/prompts"
 import { useSettings, useSimulations } from "@/lib/quiz/storage"
@@ -17,6 +19,7 @@ export function PdfImport() {
   const [sims] = useSimulations()
   const jobs = useJobs().filter((j) => j.kind === "ai-estrai")
   const [file, setFile] = useState<File | null>(null)
+  const [detectedPages, setDetectedPages] = useState<number | null>(null)
   const [name, setName] = useState("")
   const [dedicated, setDedicated] = useState(true)
   const [showSettings, setShowSettings] = useState(false)
@@ -26,6 +29,37 @@ export function PdfImport() {
 
   const update = (patch: Partial<AiSettings>) => setStored((prev) => ({ ...DEFAULT_SETTINGS, ...prev, ...patch }))
 
+  // Calcola quante pagine verranno elaborate e quali escluse
+  const pageSummary = useMemo(() => {
+    if (!detectedPages) return null
+    const excluded = parseExcludedPages(detectedPages, settings.skipStart, settings.skipEnd, settings.skipCustom)
+    const active = detectedPages - excluded.size
+    return {
+      total: detectedPages,
+      active: Math.max(0, active),
+      excludedCount: excluded.size,
+      fromPage: settings.skipStart + 1,
+      toPage: Math.max(1, detectedPages - settings.skipEnd),
+    }
+  }, [detectedPages, settings.skipStart, settings.skipEnd, settings.skipCustom])
+
+  const onFileSelect = async (f: File | null) => {
+    setFile(f)
+    setDetectedPages(null)
+    if (!f) return
+    const base = f.name.replace(/\.pdf$/i, "")
+    setName(base)
+    const inferred = inferPdfNumber(base)
+    update({ pdfNumber: inferred })
+    try {
+      const buffer = await f.arrayBuffer()
+      const doc = await PDFDocument.load(buffer, { ignoreEncryption: true })
+      setDetectedPages(doc.getPageCount())
+    } catch {
+      // Se fallisce la lettura rapida, verrà letto in fase di estrazione
+    }
+  }
+
   const start = async () => {
     if (!file) return
     setStartError(null)
@@ -33,8 +67,19 @@ export function PdfImport() {
     try {
       const finalName = name.trim() || file.name.replace(/\.pdf$/i, "")
       const pdfNum = settings.pdfNumber || inferPdfNumber(finalName)
-      const { sim } = await createSimulation(file, finalName, "ai", dedicated, settings.role, pdfNum)
+      const { sim } = await createSimulation(
+        file,
+        finalName,
+        "ai",
+        dedicated,
+        settings.role,
+        pdfNum,
+        settings.skipStart,
+        settings.skipEnd,
+        settings.skipCustom,
+      )
       setFile(null)
+      setDetectedPages(null)
       setName("")
       void runAiExtraction(sim, settings)
     } catch (e) {
@@ -78,9 +123,7 @@ export function PdfImport() {
               placeholder="AIza... (vuoto = chiave del server)"
               className="rounded-xl border border-border bg-background px-3 py-2.5 outline-none focus:border-primary"
             />
-            <span className="text-xs text-muted-foreground">
-              Salvata solo su questo dispositivo.
-            </span>
+            <span className="text-xs text-muted-foreground">Salvata solo su questo dispositivo.</span>
           </label>
           <label className="flex flex-col gap-1">
             <span className="font-bold">Modello</span>
@@ -127,7 +170,7 @@ export function PdfImport() {
         </div>
       )}
 
-      {/* Configurazione codice per quesiti */}
+      {/* Configurazione Ruolo e Codice */}
       <div className="mb-3 grid grid-cols-2 gap-3 rounded-2xl bg-secondary p-3">
         <label className="flex flex-col gap-1 text-xs">
           <span className="font-bold text-muted-foreground">Ruolo concorso</span>
@@ -153,12 +196,62 @@ export function PdfImport() {
           />
         </label>
         <p className="col-span-2 text-[11px] font-semibold text-accent-foreground">
-          Codice generato per i quesiti:{" "}
+          Codice quesiti generato:{" "}
           <span className="font-mono font-black">{settings.role}{String(settings.pdfNumber).padStart(2, "0")}N01</span>,{" "}
           <span className="font-mono font-black">{settings.role}{String(settings.pdfNumber).padStart(2, "0")}N02</span>...
         </p>
       </div>
 
+      {/* Configurazione Pagine da Saltare */}
+      <div className="mb-3 flex flex-col gap-2.5 rounded-2xl border border-border bg-secondary/80 p-3">
+        <div className="flex items-center gap-2">
+          <Filter className="size-4 text-primary" />
+          <span className="text-xs font-black uppercase tracking-wider">Pagine da saltare</span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-bold text-muted-foreground">Salta all&apos;inizio (es. copertina)</span>
+            <Stepper
+              label="Salta pagine iniziali"
+              value={settings.skipStart}
+              min={0}
+              max={30}
+              onChange={(v) => update({ skipStart: v })}
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <span className="text-xs font-bold text-muted-foreground">Salta alla fine (es. istruzioni)</span>
+            <Stepper
+              label="Salta pagine finali"
+              value={settings.skipEnd}
+              min={0}
+              max={30}
+              onChange={(v) => update({ skipEnd: v })}
+            />
+          </div>
+        </div>
+
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="font-bold text-muted-foreground">Altre pagine specifiche da saltare (opzionale)</span>
+          <input
+            value={settings.skipCustom}
+            onChange={(e) => update({ skipCustom: e.target.value })}
+            placeholder="Es. 7, 12 o 10-12"
+            className="rounded-xl border border-border bg-background px-3 py-2 font-mono text-xs outline-none focus:border-primary"
+          />
+        </label>
+
+        {pageSummary && (
+          <div className="rounded-xl bg-accent/40 p-2 text-xs font-bold text-accent-foreground">
+            PDF di {pageSummary.total} pagine · Verranno elaborate <strong>{pageSummary.active}</strong> pagine (
+            {pageSummary.fromPage <= pageSummary.toPage ? `dalla ${pageSummary.fromPage} alla ${pageSummary.toPage}` : "nessuna pagina attiva"}
+            {pageSummary.excludedCount > 0 ? `, ${pageSummary.excludedCount} saltate` : ""})
+          </div>
+        )}
+      </div>
+
+      {/* Selezione File */}
       <label className="flex cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border px-3 py-5 text-center font-bold text-muted-foreground">
         <FileText className="size-5 shrink-0" aria-hidden />
         <span className="truncate">{file ? file.name : "Scegli il PDF del libretto"}</span>
@@ -168,13 +261,7 @@ export function PdfImport() {
           className="sr-only"
           onChange={(e) => {
             const f = e.target.files?.[0] ?? null
-            setFile(f)
-            if (f) {
-              const base = f.name.replace(/\.pdf$/i, "")
-              setName(base)
-              const inferred = inferPdfNumber(base)
-              update({ pdfNumber: inferred })
-            }
+            void onFileSelect(f)
             e.target.value = ""
           }}
         />
@@ -200,7 +287,11 @@ export function PdfImport() {
         </span>
       </label>
 
-      <PrimaryButton className="mt-3 w-full" disabled={!file || starting} onClick={start}>
+      <PrimaryButton
+        className="mt-3 w-full"
+        disabled={!file || starting || (pageSummary !== null && pageSummary.active === 0)}
+        onClick={start}
+      >
         {starting ? "Preparo..." : "Estrai con Gemini"}
       </PrimaryButton>
 

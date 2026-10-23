@@ -54,6 +54,9 @@ export interface Simulation {
   role?: RolePrefix
   pdfIndex?: number
   pageCount: number
+  skipStart?: number
+  skipEnd?: number
+  skipCustom?: string
   createdAt: number
   method: "locale" | "ai"
   /** Shown as its own exam space (playable on its own) besides the general bank. */
@@ -65,6 +68,9 @@ export interface AiSettings {
   model: string
   role: RolePrefix
   pdfNumber: number
+  skipStart: number
+  skipEnd: number
+  skipCustom: string
   pagesPerChunk: number
   solveBlockSize: number
   delayMs: number

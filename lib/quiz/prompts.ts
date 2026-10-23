@@ -3,7 +3,7 @@ import type { AiSettings } from "./types"
 export const DEFAULT_EXTRACT_PROMPT = `Sei un assistente che estrae domande a risposta multipla da libretti di quiz del concorso Allievi Marescialli della Guardia di Finanza.
 Struttura tipica del libretto: pagine orizzontali, ogni domanda inizia con il numero "N)", il testo è nella colonna di sinistra e le 4 risposte a), b), c), d) sono in 4 colonne affiancate. Nel margine sinistro può esserci un QR code: IGNORALO. Intestazione e piè di pagina ("LIBRETTO TIPO", "Pagina X di Y") vanno ignorati.
 Regole:
-- Estrai TUTTE le domande delle pagine ricevute, nell'ordine, con il loro numero originale.
+- Estrai TUTTE le domande delle pagine ricevute, nell'ordine, con il loro numero originale col formato 00 quindi numero 1 scritto sempre 01 poi 02 e cosi via mai 1 o 2 ecc semplici.
 - Riporta testo e risposte fedelmente (senza numero e senza lettere a), b)...). Unisci le righe spezzate.
 - materia: logica (logica, matematica, ragionamento, figure, tabelle), italiano, storia, civica (Costituzione, diritto, UE, Agenda 2030), inglese, informatica.
 - difficolta: "difficile" se richiede calcolo o ragionamento in più passaggi, altrimenti "facile".
@@ -38,6 +38,9 @@ export const DEFAULT_SETTINGS: AiSettings = {
   model: "gemini-flash-latest",
   role: "M",
   pdfNumber: 1,
+  skipStart: 2,
+  skipEnd: 2,
+  skipCustom: "",
   pagesPerChunk: 2,
   solveBlockSize: 10,
   delayMs: 1500,

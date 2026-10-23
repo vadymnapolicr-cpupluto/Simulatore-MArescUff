@@ -6,7 +6,7 @@ import { formatQuestionCode, inferPdfNumber } from "./codes"
 import { uid } from "./engine"
 import { appendLog, createJob, getJob, patchJob, upsertStep } from "./jobs"
 import { bandBox, loadPdf, normalizedToBox, parsePage, renderRegion, unionBox } from "./pdf-local"
-import { splitPdf } from "./pdf-split"
+import { parseExcludedPages, splitPdf } from "./pdf-split"
 import { getPdf, savePdf, updateQuestions, updateSimulations, upsertQuestions } from "./storage"
 import type { AiSettings, Question, Simulation, SubjectId } from "./types"
 
@@ -82,6 +82,9 @@ export async function createSimulation(
   dedicated = false,
   role = "M" as Simulation["role"],
   pdfIndex?: number,
+  skipStart = 2,
+  skipEnd = 2,
+  skipCustom = "",
 ) {
   const data = await file.arrayBuffer()
   const doc = await loadPdf(data)
@@ -93,6 +96,9 @@ export async function createSimulation(
     role: role ?? "M",
     pdfIndex: inferredNum,
     pageCount: doc.numPages,
+    skipStart,
+    skipEnd,
+    skipCustom,
     createdAt: Date.now(),
     method,
     dedicated,
@@ -117,8 +123,16 @@ export async function runLocalExtraction(sim: Simulation, existingDoc?: PDFDocum
   const batchId = `batch-${Date.now()}`
   const pdfNum = sim.pdfIndex ?? inferPdfNumber(sim.name)
 
+  const excluded = parseExcludedPages(doc.numPages, sim.skipStart ?? 2, sim.skipEnd ?? 2, sim.skipCustom ?? "")
+
   for (let p = 1; p <= doc.numPages; p++) {
     if (getJob(job.id)?.cancelled) break
+    if (excluded.has(p)) {
+      appendLog(job.id, "info", `Pagina ${p} saltata (esclusa da configurazione)`)
+      patchJob(job.id, { done: p })
+      continue
+    }
+
     const stepId = `p${p}`
     upsertStep(job.id, { id: stepId, label: `Pagina ${p}`, status: "in-corso" })
     try {
@@ -237,15 +251,22 @@ interface ExtractedRaw {
 export async function runAiExtraction(sim: Simulation, settings: AiSettings, onlyChunks?: number[]) {
   const job = createJob({ kind: "ai-estrai", title: `Estrazione AI · ${sim.name}`, simulationId: sim.id, total: 0 })
   appendLog(job.id, "info", `PDF "${sim.fileName}" · ${sim.pageCount} pagine · modello ${settings.model}`)
-  let data: ArrayBuffer, doc: PDFDocumentProxy, chunks: Awaited<ReturnType<typeof splitPdf>>["chunks"]
+  let data: ArrayBuffer, doc: PDFDocumentProxy, chunks: Awaited<ReturnType<typeof splitPdf>>["chunks"], activePages: number[]
   try {
     ;({ data, doc } = await openSimPdf(sim.id))
-    ;({ chunks } = await splitPdf(data, settings.pagesPerChunk))
+    ;({ chunks, activePages } = await splitPdf(data, {
+      size: settings.pagesPerChunk,
+      skipStart: sim.skipStart ?? settings.skipStart ?? 2,
+      skipEnd: sim.skipEnd ?? settings.skipEnd ?? 2,
+      skipCustom: sim.skipCustom ?? settings.skipCustom ?? "",
+    }))
   } catch (e) {
     appendLog(job.id, "error", "Impossibile aprire o dividere il PDF", e instanceof Error ? { message: e.message, stack: e.stack } : String(e))
     patchJob(job.id, { running: false })
     return
   }
+
+  appendLog(job.id, "info", `Pagine totali: ${sim.pageCount} · Pagine attive estratte: ${activePages.length}`)
   const targets = onlyChunks ? chunks.filter((c) => onlyChunks.includes(c.index)) : chunks
   patchJob(job.id, { total: targets.length })
   const all: Question[] = []
@@ -284,7 +305,12 @@ export async function runAiExtraction(sim: Simulation, settings: AiSettings, onl
       const qs: Question[] = []
       for (const x of r.data.questions) {
         if (!x.domanda?.trim() || x.risposte.length < 2) continue
-        const page = Math.min(chunk.toPage, Math.max(chunk.fromPage, chunk.fromPage + (Number(x.pagina) || 1) - 1))
+        const localPageIdx = (Number(x.pagina) || 1) - 1
+        const page =
+          chunk.pageNumbers && chunk.pageNumbers[localPageIdx] !== undefined
+            ? chunk.pageNumbers[localPageIdx]
+            : Math.min(chunk.toPage, Math.max(chunk.fromPage, chunk.fromPage + localPageIdx))
+
         let image: string | undefined
         if (x.figura) {
           try {
