@@ -1,8 +1,10 @@
 "use client"
 
-import { ExternalLink, Plus, Trash2, X } from "lucide-react"
+import { ExternalLink, Loader2, Plus, Sparkles, Trash2, X } from "lucide-react"
 import { useState } from "react"
 import { openSimPdfInTab } from "@/lib/quiz/pipeline"
+import { DEFAULT_SETTINGS } from "@/lib/quiz/prompts"
+import { useSettings } from "@/lib/quiz/storage"
 import { SUBJECTS } from "@/lib/quiz/subjects"
 import type { Question, Simulation } from "@/lib/quiz/types"
 import { cn } from "@/lib/utils"
@@ -10,17 +12,15 @@ import { PrimaryButton, Segmented } from "./primitives"
 
 const LETTERS = "ABCDEFGH"
 
-const SOURCE_LABEL = { locale: "Import PDF locale", ai: "Import PDF con Gemini", manuale: "Inserita a mano" } as const
-
 export function QuestionInfo({ q, sim }: { q: Question; sim?: Simulation }) {
   const rows: [string, string][] = []
+  if (q.code) rows.push(["Codice", q.code])
   if (q.sourcePdf) rows.push(["PDF", q.sourcePdf])
   if (q.sourceName ?? sim?.name) rows.push(["Prova", (q.sourceName ?? sim?.name)!])
   if (q.page) rows.push(["Pagina", String(q.page)])
   if (q.number) rows.push(["Numero", String(q.number)])
-  rows.push(["Origine", q.source ? SOURCE_LABEL[q.source] : "Archivio predefinito"])
   if (q.edited) rows.push(["Modificata", "Sì, a mano"])
-  if (q.updatedAt) rows.push(["Aggiornata", new Date(q.updatedAt).toLocaleString("it-IT")])
+
   return (
     <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-2xl bg-secondary p-3 text-xs">
       {rows.map(([k, v]) => (
@@ -36,19 +36,24 @@ export function QuestionInfo({ q, sim }: { q: Question; sim?: Simulation }) {
 export function QuestionEditor({
   question,
   sim,
-  deletable,
+  deletable = true,
   onSave,
   onDelete,
   onClose,
 }: {
   question: Question
   sim?: Simulation
-  deletable: boolean
+  deletable?: boolean
   onSave: (q: Question) => void
   onDelete: () => void
   onClose: () => void
 }) {
   const [draft, setDraft] = useState<Question>(question)
+  const [replacing, setReplacing] = useState(false)
+  const [replaceError, setReplaceError] = useState<string | null>(null)
+  const [stored] = useSettings()
+  const settings = { ...DEFAULT_SETTINGS, ...stored }
+
   const set = (patch: Partial<Question>) => setDraft((d) => ({ ...d, ...patch }))
   const valid = draft.text.trim() && draft.options.length >= 2 && draft.options.every((o) => o.trim())
 
@@ -59,16 +64,60 @@ export function QuestionEditor({
       correctIndex: draft.correctIndex === i ? -1 : draft.correctIndex > i ? draft.correctIndex - 1 : draft.correctIndex,
     })
 
+  const handleAiReplace = async () => {
+    setReplacing(true)
+    setReplaceError(null)
+    try {
+      const res = await fetch("/api/ai/regenerate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiKey: settings.apiKey,
+          model: settings.model,
+          currentQuestion: {
+            subject: draft.subject,
+            difficulty: draft.difficulty,
+            topic: draft.topic,
+            text: draft.text,
+            options: draft.options,
+          },
+        }),
+      })
+
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || "Impossibile rigenerare la domanda.")
+
+      const q = data.question
+      const letterIdx = q.corretta.toUpperCase().charCodeAt(0) - 65
+      set({
+        text: q.domanda,
+        options: q.risposte,
+        correctIndex: letterIdx >= 0 && letterIdx < 4 ? letterIdx : 0,
+        topic: q.argomento,
+        explanation: q.spiegazione,
+        edited: true,
+      })
+    } catch (e) {
+      setReplaceError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setReplacing(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-3 rounded-2xl border border-primary/40 bg-card p-3">
       <div className="flex items-center justify-between">
-        <h3 className="text-sm font-extrabold">Modifica quesito</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-extrabold">Modifica quesito</h3>
+          {draft.code && <span className="rounded-md bg-primary/20 px-2 py-0.5 font-mono text-xs font-black text-primary">{draft.code}</span>}
+        </div>
         <button type="button" onClick={onClose} aria-label="Chiudi" className="flex size-9 items-center justify-center rounded-full bg-secondary">
           <X className="size-4" aria-hidden />
         </button>
       </div>
 
       <QuestionInfo q={question} sim={sim} />
+
       {sim && question.page && (
         <button
           type="button"
@@ -80,10 +129,56 @@ export function QuestionEditor({
         </button>
       )}
 
+      {/* Box Scritta male? Sostituisci con AI */}
+      <div className="rounded-2xl border border-warning/30 bg-warning/10 p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <p className="text-xs font-extrabold text-warning">Scritta male o illeggibile?</p>
+            <p className="text-[11px] text-muted-foreground">Rigenera una domanda simile via AI mantenendo materia e difficoltà.</p>
+          </div>
+          <button
+            type="button"
+            disabled={replacing}
+            onClick={handleAiReplace}
+            className="flex shrink-0 items-center gap-1.5 rounded-xl bg-warning px-3 py-2 text-xs font-black text-black disabled:opacity-50"
+          >
+            {replacing ? <Loader2 className="size-3.5 animate-spin" /> : <Sparkles className="size-3.5" />}
+            Sostituisci
+          </button>
+        </div>
+        {replaceError && <p className="mt-2 text-xs font-semibold text-destructive">{replaceError}</p>}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-bold">Codice (es. M05N67)</span>
+          <input
+            value={draft.code ?? ""}
+            onChange={(e) => set({ code: e.target.value.toUpperCase().trim() })}
+            placeholder="M05N01"
+            className="rounded-xl border border-border bg-secondary px-3 py-2 font-mono text-sm uppercase outline-none focus:border-primary"
+          />
+        </label>
+        <label className="flex flex-col gap-1 text-sm">
+          <span className="font-bold">Materia</span>
+          <select
+            value={draft.subject}
+            onChange={(e) => set({ subject: e.target.value as Question["subject"] })}
+            className="rounded-xl border border-border bg-secondary px-3 py-2 text-sm outline-none focus:border-primary"
+          >
+            {SUBJECTS.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       <label className="flex flex-col gap-1 text-sm">
-        <span className="font-bold">Testo</span>
+        <span className="font-bold">Testo domanda</span>
         <textarea
-          rows={4}
+          rows={3}
           value={draft.text}
           onChange={(e) => set({ text: e.target.value })}
           className="rounded-xl border border-border bg-secondary p-2 outline-none focus:border-primary"
@@ -110,7 +205,7 @@ export function QuestionEditor({
           <div key={i} className="flex items-center gap-2">
             <label
               className={cn(
-                "flex size-9 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 text-sm font-black",
+                "flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-full border-2 text-xs font-black",
                 draft.correctIndex === i ? "border-success bg-success text-background" : "border-border",
               )}
             >
@@ -129,7 +224,7 @@ export function QuestionEditor({
               disabled={draft.options.length <= 2}
               onClick={() => removeOption(i)}
               aria-label={`Rimuovi risposta ${LETTERS[i]}`}
-              className="flex size-9 items-center justify-center rounded-full text-muted-foreground disabled:opacity-30"
+              className="flex size-8 items-center justify-center text-muted-foreground disabled:opacity-30"
             >
               <X className="size-4" aria-hidden />
             </button>
@@ -145,23 +240,7 @@ export function QuestionEditor({
             Aggiungi risposta
           </button>
         )}
-        {draft.correctIndex < 0 && <p className="text-xs font-bold text-warning">Nessuna risposta corretta: il quesito non verrà usato nelle prove.</p>}
       </fieldset>
-
-      <label className="flex flex-col gap-1 text-sm">
-        <span className="font-bold">Materia</span>
-        <select
-          value={draft.subject}
-          onChange={(e) => set({ subject: e.target.value as Question["subject"] })}
-          className="rounded-xl border border-border bg-secondary px-3 py-2.5 outline-none focus:border-primary"
-        >
-          {SUBJECTS.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.label}
-            </option>
-          ))}
-        </select>
-      </label>
 
       <Segmented
         label="Difficoltà"
@@ -178,41 +257,41 @@ export function QuestionEditor({
         <input
           value={draft.topic ?? ""}
           onChange={(e) => set({ topic: e.target.value || undefined })}
-          className="rounded-xl border border-border bg-secondary px-3 py-2.5 outline-none focus:border-primary"
+          className="rounded-xl border border-border bg-secondary px-3 py-2 outline-none focus:border-primary"
         />
       </label>
 
       <label className="flex flex-col gap-1 text-sm">
         <span className="font-bold">Spiegazione</span>
         <textarea
-          rows={3}
+          rows={2}
           value={draft.explanation ?? ""}
           onChange={(e) => set({ explanation: e.target.value || undefined })}
           className="rounded-xl border border-border bg-secondary p-2 outline-none focus:border-primary"
         />
       </label>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 pt-2">
         {deletable && (
           <button
             type="button"
             onClick={() => {
-              if (confirm("Eliminare questo quesito dall'archivio?")) onDelete()
+              if (confirm("Eliminare definitivamente questo quesito dall'archivio?")) onDelete()
             }}
-            className="flex items-center gap-1 rounded-full bg-secondary px-4 font-bold text-destructive"
+            className="flex items-center gap-1 rounded-full bg-secondary px-4 text-xs font-bold text-destructive"
           >
             <Trash2 className="size-4" aria-hidden />
             Elimina
           </button>
         )}
         <PrimaryButton
-          className="flex-1 px-4 py-3 text-base"
+          className="flex-1 py-2 text-sm"
           disabled={!valid}
           onClick={() =>
             onSave({ ...draft, text: draft.text.trim(), options: draft.options.map((o) => o.trim()), edited: true, updatedAt: Date.now() })
           }
         >
-          Salva
+          Salva modifiche
         </PrimaryButton>
       </div>
     </div>

@@ -2,6 +2,7 @@
 
 import type { PDFDocumentProxy } from "pdfjs-dist"
 import { classifySequence } from "./classify"
+import { formatQuestionCode, inferPdfNumber } from "./codes"
 import { uid } from "./engine"
 import { appendLog, createJob, getJob, patchJob, upsertStep } from "./jobs"
 import { bandBox, loadPdf, normalizedToBox, parsePage, renderRegion, unionBox } from "./pdf-local"
@@ -48,7 +49,6 @@ async function callApi<T>(url: string, init: RequestInit): Promise<{ ok: true; d
   }
 }
 
-/** Retries rate-limit / overload errors honoring Gemini's retryDelay; stops on daily quota or auth errors. */
 async function withRetry<T>(
   jobId: string,
   stepId: string,
@@ -75,13 +75,23 @@ async function withRetry<T>(
   }
 }
 
-export async function createSimulation(file: File, name: string, method: Simulation["method"], dedicated = false) {
+export async function createSimulation(
+  file: File,
+  name: string,
+  method: Simulation["method"],
+  dedicated = false,
+  role = "M" as Simulation["role"],
+  pdfIndex?: number,
+) {
   const data = await file.arrayBuffer()
   const doc = await loadPdf(data)
+  const inferredNum = pdfIndex ?? inferPdfNumber(name.trim() || file.name)
   const sim: Simulation = {
     id: `sim-${uid()}`,
     name: name.trim() || file.name.replace(/\.pdf$/i, ""),
     fileName: file.name,
+    role: role ?? "M",
+    pdfIndex: inferredNum,
     pageCount: doc.numPages,
     createdAt: Date.now(),
     method,
@@ -99,12 +109,13 @@ async function openSimPdf(simId: string) {
   return { data, doc: await loadPdf(data) }
 }
 
-/** Free, offline extraction from the PDF text layer. Solutions are left empty (correctIndex -1). */
 export async function runLocalExtraction(sim: Simulation, existingDoc?: PDFDocumentProxy) {
   const job = createJob({ kind: "locale", title: `Scansione locale · ${sim.name}`, simulationId: sim.id, total: sim.pageCount })
   const doc = existingDoc ?? (await openSimPdf(sim.id)).doc
   const found: Question[] = []
   let scannedPages = 0
+  const batchId = `batch-${Date.now()}`
+  const pdfNum = sim.pdfIndex ?? inferPdfNumber(sim.name)
 
   for (let p = 1; p <= doc.numPages; p++) {
     if (getJob(job.id)?.cancelled) break
@@ -119,12 +130,14 @@ export async function runLocalExtraction(sim: Simulation, existingDoc?: PDFDocum
         if (lq.figures.length) {
           ;[image] = await renderRegion(doc, p, [unionBox(lq.figures)])
         } else if (lq.warnings.some((w) => w.startsWith("Cita una figura"))) {
-          // Vector tables/figures are not images in the PDF: keep a crop of the whole question band.
           ;[image] = await renderRegion(doc, p, [await bandBox(doc, p, lq.band)])
           imageMissing = true
         }
+        const code = formatQuestionCode(sim.role ?? "M", pdfNum, lq.number)
         found.push({
           id: questionId(sim.id, lq.number),
+          code,
+          batchId,
           subject: "logica",
           difficulty: "facile",
           text: lq.text,
@@ -188,7 +201,6 @@ function addSummary(jobId: string, qs: Question[], scannedPages = 0) {
   })
 }
 
-/** Keeps existing solutions / manual edits when re-importing the same question number. */
 async function mergeIntoSimulation(simId: string, incoming: Question[]) {
   await updateQuestions((prev) => {
     const map = new Map(prev.map((q) => [q.id, q]))
@@ -200,6 +212,7 @@ async function mergeIntoSimulation(simId: string, incoming: Question[]) {
         map.set(q.id, {
           ...old,
           ...q,
+          code: q.code ?? old.code,
           correctIndex: q.correctIndex >= 0 ? q.correctIndex : old.correctIndex,
           explanation: q.explanation ?? old.explanation,
           image: q.image ?? old.image,
@@ -221,10 +234,9 @@ interface ExtractedRaw {
   figura: number[] | null
 }
 
-/** AI extraction in small chunks (default 2 pages). Also works on scanned PDFs. */
 export async function runAiExtraction(sim: Simulation, settings: AiSettings, onlyChunks?: number[]) {
   const job = createJob({ kind: "ai-estrai", title: `Estrazione AI · ${sim.name}`, simulationId: sim.id, total: 0 })
-  appendLog(job.id, "info", `PDF "${sim.fileName}" · ${sim.pageCount} pagine · modello ${settings.model} · ${settings.pagesPerChunk} pagine per blocco`)
+  appendLog(job.id, "info", `PDF "${sim.fileName}" · ${sim.pageCount} pagine · modello ${settings.model}`)
   let data: ArrayBuffer, doc: PDFDocumentProxy, chunks: Awaited<ReturnType<typeof splitPdf>>["chunks"]
   try {
     ;({ data, doc } = await openSimPdf(sim.id))
@@ -236,8 +248,10 @@ export async function runAiExtraction(sim: Simulation, settings: AiSettings, onl
   }
   const targets = onlyChunks ? chunks.filter((c) => onlyChunks.includes(c.index)) : chunks
   patchJob(job.id, { total: targets.length })
-  appendLog(job.id, "info", `${targets.length} blocchi da inviare a Gemini${onlyChunks ? " (solo blocchi falliti)" : ""}`)
   const all: Question[] = []
+  const batchId = `batch-${Date.now()}`
+  const pdfNum = sim.pdfIndex ?? settings.pdfNumber ?? inferPdfNumber(sim.name)
+  const role = sim.role ?? settings.role ?? "M"
 
   for (const [i, chunk] of targets.entries()) {
     if (getJob(job.id)?.cancelled) break
@@ -281,8 +295,12 @@ export async function runAiExtraction(sim: Simulation, settings: AiSettings, onl
           }
         }
         const n = Number(x.numero) || all.length + qs.length + 1
+        const code = formatQuestionCode(role, pdfNum, n)
+
         qs.push({
           id: questionId(sim.id, n),
+          code,
+          batchId,
           subject: x.materia,
           difficulty: x.difficolta,
           text: x.domanda.trim(),
@@ -310,7 +328,7 @@ export async function runAiExtraction(sim: Simulation, settings: AiSettings, onl
   appendLog(
     job.id,
     getJob(job.id)?.cancelled ? "warn" : "ok",
-    `${getJob(job.id)?.cancelled ? "Annullato" : "Completato"}: ${all.length} domande salvate nella banca dati generale${sim.dedicated ? ` e nello spazio "${sim.name}"` : ""}`,
+    `${getJob(job.id)?.cancelled ? "Annullato" : "Completato"}: ${all.length} domande salvate.`,
   )
   patchJob(job.id, { running: false })
 }
@@ -326,7 +344,6 @@ interface SolutionRaw {
   spiegazione: string
 }
 
-/** Sends already-extracted questions to Gemini in blocks to get answers + explanations. */
 export async function runAiSolve(questions: Question[], settings: AiSettings, title: string, simulationId?: string) {
   const size = Math.max(1, settings.solveBlockSize)
   const blocks: Question[][] = []
@@ -337,7 +354,7 @@ export async function runAiSolve(questions: Question[], settings: AiSettings, ti
   for (const [i, block] of blocks.entries()) {
     if (getJob(job.id)?.cancelled) break
     const stepId = `b${i}`
-    const nums = block.map((q) => q.number ?? "?")
+    const nums = block.map((q) => q.code ?? q.number ?? "?")
     const label = `Domande ${nums[0]}–${nums.at(-1)}`
     upsertStep(job.id, { id: stepId, label, status: "in-corso" })
 
@@ -421,9 +438,9 @@ export async function openSimPdfInTab(sim: Simulation, page?: number) {
   return true
 }
 
-/** Exports questions as JSON compatible with the importer. */
 export function exportJson(qs: Question[], fileName: string) {
   const data = qs.map((q) => ({
+    codice: q.code,
     numero: q.number,
     materia: q.subject,
     difficolta: q.difficulty,

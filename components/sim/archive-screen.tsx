@@ -1,11 +1,31 @@
 "use client"
 
-import { Download, ExternalLink, FileText, Pencil, Play, Search, Sparkles, Trash2 } from "lucide-react"
+import {
+  Download,
+  ExternalLink,
+  FileText,
+  Layers,
+  Pencil,
+  Play,
+  RotateCcw,
+  Search,
+  Sparkles,
+  Trash2,
+} from "lucide-react"
 import { useMemo, useState } from "react"
 import { useJobs } from "@/lib/quiz/jobs"
 import { deleteSimulation, downloadSimPdf, exportJson, openSimPdfInTab, runAiSolve } from "@/lib/quiz/pipeline"
 import { DEFAULT_SETTINGS } from "@/lib/quiz/prompts"
-import { updateQuestions, updateSimulations, upsertQuestions, useSettings, useSimulations } from "@/lib/quiz/storage"
+import { SEED_QUESTIONS } from "@/lib/quiz/seed-questions"
+import {
+  updateDeletedSeedIds,
+  updateQuestions,
+  updateSimulations,
+  upsertQuestions,
+  useDeletedSeedIds,
+  useSettings,
+  useSimulations,
+} from "@/lib/quiz/storage"
 import { SUBJECT_SHORT, SUBJECTS } from "@/lib/quiz/subjects"
 import { isSolved, type Question, type Simulation, type SubjectId } from "@/lib/quiz/types"
 import { cn } from "@/lib/utils"
@@ -19,7 +39,6 @@ type Tab = "domande" | "prove"
 
 export function ArchiveScreen({
   bank,
-  importedIds,
   onPlay,
   onBack,
 }: {
@@ -31,6 +50,7 @@ export function ArchiveScreen({
   const [tab, setTab] = useState<Tab>("domande")
   const [sims] = useSimulations()
   const [stored] = useSettings()
+  const [deletedSeeds] = useDeletedSeedIds()
   const settings = { ...DEFAULT_SETTINGS, ...stored }
   const solveJobs = useJobs().filter((j) => j.kind === "ai-risolvi")
 
@@ -40,9 +60,28 @@ export function ArchiveScreen({
   const [onlyUnsolved, setOnlyUnsolved] = useState(false)
   const [limit, setLimit] = useState(PAGE)
   const [editing, setEditing] = useState<string | null>(null)
+  const [manageOpen, setManageOpen] = useState(false)
 
   const simById = useMemo(() => new Map(sims.map((s) => [s.id, s])), [sims])
   const pdfNames = useMemo(() => [...new Set(bank.map((q) => q.sourcePdf).filter((x): x is string => !!x))].sort(), [bank])
+
+  // Rileva codici prefisso presenti (es: M01, M05, A01...)
+  const codePrefixes = useMemo(() => {
+    const set = new Set<string>()
+    for (const q of bank) {
+      if (q.code) {
+        const m = /^([MAU]\d{2})/.exec(q.code)
+        if (m) set.add(m[1])
+      }
+    }
+    return [...set].sort()
+  }, [bank])
+
+  // Trova l'ultimo batch di aggiunta in blocco
+  const lastBatchId = useMemo(() => {
+    const list = bank.filter((q) => !!q.batchId)
+    return list.length ? list[list.length - 1].batchId : null
+  }, [bank])
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -52,19 +91,172 @@ export function ArchiveScreen({
         if (source !== "tutte" && source !== "predefinite" && x.sourcePdf !== source) return false
         if (subject !== "tutte" && x.subject !== subject) return false
         if (onlyUnsolved && isSolved(x)) return false
-        if (q && !`${x.text} ${x.options.join(" ")} ${x.topic ?? ""} ${x.number ?? ""}`.toLowerCase().includes(q)) return false
+        if (q) {
+          const haystack = `${x.code ?? ""} ${x.text} ${x.options.join(" ")} ${x.topic ?? ""} ${x.number ?? ""}`.toLowerCase()
+          if (!haystack.includes(q)) return false
+        }
         return true
       })
-      .sort((a, b) => (a.sourcePdf ?? "").localeCompare(b.sourcePdf ?? "") || (a.number ?? 0) - (b.number ?? 0))
+      .sort((a, b) => (a.code ?? "").localeCompare(b.code ?? "") || (a.number ?? 0) - (b.number ?? 0))
   }, [bank, query, source, subject, onlyUnsolved])
 
   const questionsOf = (simId: string) =>
     bank.filter((q) => q.simulationId === simId).sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
 
+  // Svuota archivio totale: cancella tutte le domande importate E nasconde tutte le domande seed
+  const handlePurgeAll = async () => {
+    if (!confirm("ATTENZIONE: Stai per SVUOTARE COMPLETAMENTE L'ARCHIVIO (tutte le domande, sia importate che predefinite verranno rimosse).\n\nConfermi?")) return
+    await updateQuestions(() => [])
+    await updateDeletedSeedIds(() => SEED_QUESTIONS.map((s) => s.id))
+    setManageOpen(false)
+  }
+
+  // Ripristina le domande predefinite
+  const handleRestoreSeeds = async () => {
+    await updateDeletedSeedIds(() => [])
+    alert("Domande predefinite ripristinate con successo!")
+  }
+
+  // Elimina ultimo blocco importato
+  const handlePurgeLastBatch = async () => {
+    if (!lastBatchId) {
+      alert("Nessun blocco recente tracciato da eliminare.")
+      return
+    }
+    const count = bank.filter((q) => q.batchId === lastBatchId).length
+    if (!confirm(`Vuoi eliminare l'ultimo blocco importato (${count} domande)?`)) return
+    await updateQuestions((prev) => prev.filter((q) => q.batchId !== lastBatchId))
+  }
+
+  // Elimina per codice prefisso (es: tutti i quesiti M05)
+  const handlePurgeByCode = async (prefix: string) => {
+    const toRemove = bank.filter((q) => q.code?.startsWith(prefix))
+    if (!confirm(`Eliminare tutte le ${toRemove.length} domande con codice ${prefix}...?`)) return
+    const ids = new Set(toRemove.map((q) => q.id))
+    await updateQuestions((prev) => prev.filter((q) => !ids.has(q.id)))
+    await updateDeletedSeedIds((prev) => [...new Set([...prev, ...toRemove.filter((q) => q.id.startsWith("seed-") || q.id.startsWith("gen-")).map((q) => q.id)])])
+  }
+
+  // Elimina per materia
+  const handlePurgeBySubject = async (sub: SubjectId) => {
+    const toRemove = bank.filter((q) => q.subject === sub)
+    if (!confirm(`Eliminare tutte le ${toRemove.length} domande di ${SUBJECT_SHORT[sub]}?`)) return
+    const ids = new Set(toRemove.map((q) => q.id))
+    await updateQuestions((prev) => prev.filter((q) => !ids.has(q.id)))
+    await updateDeletedSeedIds((prev) => [...new Set([...prev, ...toRemove.filter((q) => q.id.startsWith("seed-") || q.id.startsWith("gen-")).map((q) => q.id)])])
+  }
+
+  // Elimina singola domanda
+  const handleDeleteSingle = async (id: string) => {
+    await updateQuestions((prev) => prev.filter((x) => x.id !== id))
+    if (id.startsWith("seed-") || id.startsWith("gen-")) {
+      await updateDeletedSeedIds((prev) => [...prev, id])
+    }
+    setEditing(null)
+  }
+
   return (
     <main className="mx-auto min-h-dvh max-w-lg pb-12">
-      <TopBar title="Archivio quiz" onBack={onBack} />
+      <TopBar
+        title="Archivio quiz"
+        onBack={onBack}
+        right={
+          <button
+            type="button"
+            onClick={() => setManageOpen((v) => !v)}
+            aria-label="Gestione e svuota archivio"
+            className={cn(
+              "flex size-10 items-center justify-center rounded-full border transition",
+              manageOpen ? "border-destructive bg-destructive text-white" : "border-border bg-secondary text-destructive",
+            )}
+          >
+            <Trash2 className="size-5" />
+          </button>
+        }
+      />
+
       <div className="flex flex-col gap-4 px-4">
+        {/* Pannello svuota archivio ed eliminazioni selettive */}
+        {manageOpen && (
+          <div className="flex flex-col gap-3 rounded-3xl border border-destructive/40 bg-card p-4 shadow-xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-black text-destructive">Gestione ed Eliminazione Archivio</h3>
+              <button type="button" onClick={() => setManageOpen(false)} className="text-xs font-bold text-muted-foreground">
+                Chiudi
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Elimina tutto l&apos;archivio o cancella selettivamente per blocco, codice o materia.
+            </p>
+
+            <button
+              type="button"
+              onClick={handlePurgeAll}
+              className="flex items-center justify-center gap-2 rounded-2xl bg-destructive py-3 text-sm font-black text-white"
+            >
+              <Trash2 className="size-4" /> Svuota archivio totale ({bank.length} domande)
+            </button>
+
+            {deletedSeeds.length > 0 && (
+              <button
+                type="button"
+                onClick={handleRestoreSeeds}
+                className="flex items-center justify-center gap-1.5 rounded-xl bg-secondary py-2 text-xs font-bold text-primary"
+              >
+                <RotateCcw className="size-3.5" /> Ripristina domande predefinite ({deletedSeeds.length})
+              </button>
+            )}
+
+            {lastBatchId && (
+              <button
+                type="button"
+                onClick={handlePurgeLastBatch}
+                className="flex items-center justify-center gap-1.5 rounded-xl border border-border bg-secondary py-2 text-xs font-bold text-secondary-foreground"
+              >
+                <Layers className="size-3.5" /> Elimina ultima aggiunta in blocchi
+              </button>
+            )}
+
+            {codePrefixes.length > 0 && (
+              <div>
+                <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Elimina per codice PDF:
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {codePrefixes.map((pfx) => (
+                    <button
+                      key={pfx}
+                      type="button"
+                      onClick={() => handlePurgeByCode(pfx)}
+                      className="rounded-lg bg-secondary px-2.5 py-1 font-mono text-xs font-bold hover:bg-destructive hover:text-white"
+                    >
+                      {pfx} ({bank.filter((q) => q.code?.startsWith(pfx)).length})
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div>
+              <span className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                Elimina per materia:
+              </span>
+              <div className="grid grid-cols-3 gap-1.5 text-xs">
+                {SUBJECTS.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    onClick={() => handlePurgeBySubject(s.id)}
+                    className="rounded-lg bg-secondary p-1.5 text-center font-bold text-muted-foreground hover:bg-destructive hover:text-white"
+                  >
+                    {s.short} ({bank.filter((q) => q.subject === s.id).length})
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
         <Segmented
           label="Sezione archivio"
           value={tab}
@@ -91,16 +283,13 @@ export function ArchiveScreen({
                     setQuery(e.target.value)
                     setLimit(PAGE)
                   }}
-                  placeholder="Cerca testo, risposta, numero..."
+                  placeholder="Cerca codice (es. M05N67), testo, risposta..."
                   className="min-w-0 flex-1 bg-transparent py-3 text-sm outline-none"
                 />
               </label>
               <div className="grid grid-cols-2 gap-2 text-sm">
-                <label className="sr-only" htmlFor="archive-source">
-                  PDF di origine
-                </label>
                 <select
-                  id="archive-source"
+                  aria-label="PDF di origine"
                   value={source}
                   onChange={(e) => {
                     setSource(e.target.value)
@@ -116,11 +305,9 @@ export function ArchiveScreen({
                     </option>
                   ))}
                 </select>
-                <label className="sr-only" htmlFor="archive-subject">
-                  Materia
-                </label>
+
                 <select
-                  id="archive-subject"
+                  aria-label="Materia"
                   value={subject}
                   onChange={(e) => {
                     setSubject(e.target.value as SubjectId | "tutte")
@@ -136,11 +323,14 @@ export function ArchiveScreen({
                   ))}
                 </select>
               </div>
-              <label className="flex items-center gap-2 text-sm font-semibold">
-                <input type="checkbox" checked={onlyUnsolved} onChange={(e) => setOnlyUnsolved(e.target.checked)} className="size-4 accent-[var(--primary)]" />
-                Solo senza risposta corretta
-              </label>
-              <p className="text-xs text-muted-foreground">{filtered.length} risultati</p>
+
+              <div className="flex items-center justify-between text-xs">
+                <label className="flex items-center gap-2 font-semibold">
+                  <input type="checkbox" checked={onlyUnsolved} onChange={(e) => setOnlyUnsolved(e.target.checked)} className="size-4 accent-primary" />
+                  Solo senza risposta corretta
+                </label>
+                <span className="text-muted-foreground">{filtered.length} risultati</span>
+              </div>
             </div>
 
             <ul className="flex flex-col gap-2">
@@ -150,16 +340,13 @@ export function ArchiveScreen({
                     <QuestionEditor
                       question={q}
                       sim={q.simulationId ? simById.get(q.simulationId) : undefined}
-                      deletable={importedIds.has(q.id)}
+                      deletable={true}
                       onClose={() => setEditing(null)}
                       onSave={async (next) => {
                         await upsertQuestions([next])
                         setEditing(null)
                       }}
-                      onDelete={async () => {
-                        await updateQuestions((prev) => prev.filter((x) => x.id !== q.id))
-                        setEditing(null)
-                      }}
+                      onDelete={() => handleDeleteSingle(q.id)}
                     />
                   </li>
                 ) : (
@@ -167,11 +354,18 @@ export function ArchiveScreen({
                     <button
                       type="button"
                       onClick={() => setEditing(q.id)}
-                      className="flex w-full flex-col gap-1.5 rounded-2xl border border-border bg-card p-3 text-left"
+                      className="flex w-full flex-col gap-1.5 rounded-2xl border border-border bg-card p-3 text-left transition hover:border-primary/50"
                     >
                       <span className="flex items-center gap-2 text-[11px] font-bold">
-                        {q.number !== undefined && <span className="rounded-full bg-muted px-2 py-0.5 tabular-nums">n. {q.number}</span>}
+                        {q.code ? (
+                          <span className="rounded-md bg-primary/20 px-2 py-0.5 font-mono font-black text-primary">
+                            {q.code}
+                          </span>
+                        ) : q.number !== undefined ? (
+                          <span className="rounded-full bg-muted px-2 py-0.5 tabular-nums">n. {q.number}</span>
+                        ) : null}
                         <span className="rounded-full bg-muted px-2 py-0.5">{SUBJECT_SHORT[q.subject]}</span>
+                        <span className="rounded-full bg-muted px-1.5 py-0.5 capitalize">{q.difficulty}</span>
                         {!isSolved(q) && <span className="rounded-full bg-warning/20 px-2 py-0.5 text-warning">Senza soluzione</span>}
                         {q.edited && <span className="rounded-full bg-primary/20 px-2 py-0.5 text-primary">Modificata</span>}
                         <Pencil className="ml-auto size-3.5 text-muted-foreground" aria-hidden />
@@ -257,7 +451,7 @@ function SimCard({
             role="switch"
             checked={!!sim.dedicated}
             onChange={(e) => update({ dedicated: e.target.checked })}
-            className="size-5 shrink-0 accent-[var(--primary)]"
+            className="size-5 shrink-0 accent-primary"
           />
         </label>
 

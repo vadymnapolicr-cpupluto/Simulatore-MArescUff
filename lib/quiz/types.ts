@@ -8,8 +8,12 @@ export type SubjectId =
 
 export type Difficulty = "facile" | "difficile"
 
+export type RolePrefix = "M" | "A" | "U" // M = Maresciallo, A = Allievo, U = Ufficiale
+
 export interface Question {
   id: string
+  /** Codice ufficiale/univoco del quesito (es. M05N67) */
+  code?: string
   subject: SubjectId
   topic?: string
   difficulty: Difficulty
@@ -20,6 +24,8 @@ export interface Question {
   image?: string
   /** Simulation (PDF) this question was extracted from. */
   simulationId?: string
+  /** ID del blocco di importazione per consentire l'eliminazione per ultima aggiunta */
+  batchId?: string
   /** Original number in the PDF. */
   number?: number
   /** 1-based page in the PDF. */
@@ -29,7 +35,7 @@ export interface Question {
   /** Text references a figure/table but no image was found. */
   imageMissing?: boolean
   source?: "locale" | "ai" | "manuale"
-  /** File name of the PDF the question was imported from (always kept, even if the space is deleted). */
+  /** File name of the PDF the question was imported from. */
   sourcePdf?: string
   /** Name of the exam ("prova") given at import time. */
   sourceName?: string
@@ -45,6 +51,8 @@ export interface Simulation {
   id: string
   name: string
   fileName: string
+  role?: RolePrefix
+  pdfIndex?: number
   pageCount: number
   createdAt: number
   method: "locale" | "ai"
@@ -55,6 +63,8 @@ export interface Simulation {
 export interface AiSettings {
   apiKey: string
   model: string
+  role: RolePrefix
+  pdfNumber: number
   pagesPerChunk: number
   solveBlockSize: number
   delayMs: number

@@ -36,6 +36,8 @@ export const MODEL_SUGGESTIONS = [
 export const DEFAULT_SETTINGS: AiSettings = {
   apiKey: "",
   model: "gemini-flash-latest",
+  role: "M",
+  pdfNumber: 1,
   pagesPerChunk: 2,
   solveBlockSize: 10,
   delayMs: 1500,

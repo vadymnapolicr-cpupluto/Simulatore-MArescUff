@@ -2,11 +2,12 @@
 
 import { FileText, Settings2, Sparkles, Trash2 } from "lucide-react"
 import { useId, useState } from "react"
+import { inferPdfNumber } from "@/lib/quiz/codes"
 import { clearFinishedJobs, useJobs } from "@/lib/quiz/jobs"
 import { createSimulation, runAiExtraction } from "@/lib/quiz/pipeline"
 import { DEFAULT_EXTRACT_PROMPT, DEFAULT_SETTINGS, MODEL_SUGGESTIONS } from "@/lib/quiz/prompts"
 import { useSettings, useSimulations } from "@/lib/quiz/storage"
-import type { AiSettings } from "@/lib/quiz/types"
+import type { AiSettings, RolePrefix } from "@/lib/quiz/types"
 import { JobLog } from "./job-log"
 import { PrimaryButton, Section, Stepper } from "./primitives"
 
@@ -30,7 +31,9 @@ export function PdfImport() {
     setStartError(null)
     setStarting(true)
     try {
-      const { sim } = await createSimulation(file, name.trim() || file.name.replace(/\.pdf$/i, ""), "ai", dedicated)
+      const finalName = name.trim() || file.name.replace(/\.pdf$/i, "")
+      const pdfNum = settings.pdfNumber || inferPdfNumber(finalName)
+      const { sim } = await createSimulation(file, finalName, "ai", dedicated, settings.role, pdfNum)
       setFile(null)
       setName("")
       void runAiExtraction(sim, settings)
@@ -50,7 +53,7 @@ export function PdfImport() {
     <Section
       icon={Sparkles}
       title="PDF → quesiti con Gemini"
-      description={`Blocchi da ${settings.pagesPerChunk} pagine · ${settings.model}`}
+      description={`Codice: ${settings.role}${String(settings.pdfNumber).padStart(2, "0")}N... · ${settings.model}`}
       action={
         <button
           type="button"
@@ -76,7 +79,7 @@ export function PdfImport() {
               className="rounded-xl border border-border bg-background px-3 py-2.5 outline-none focus:border-primary"
             />
             <span className="text-xs text-muted-foreground">
-              Salvata solo su questo dispositivo. Ottienila gratis su aistudio.google.com.
+              Salvata solo su questo dispositivo.
             </span>
           </label>
           <label className="flex flex-col gap-1">
@@ -124,6 +127,38 @@ export function PdfImport() {
         </div>
       )}
 
+      {/* Configurazione codice per quesiti */}
+      <div className="mb-3 grid grid-cols-2 gap-3 rounded-2xl bg-secondary p-3">
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="font-bold text-muted-foreground">Ruolo concorso</span>
+          <select
+            value={settings.role}
+            onChange={(e) => update({ role: e.target.value as RolePrefix })}
+            className="rounded-xl border border-border bg-background px-2.5 py-2 font-bold outline-none"
+          >
+            <option value="M">M - Maresciallo</option>
+            <option value="A">A - Allievo</option>
+            <option value="U">U - Ufficiale</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1 text-xs">
+          <span className="font-bold text-muted-foreground">Numero PDF (es. 05)</span>
+          <input
+            type="number"
+            min={1}
+            max={99}
+            value={settings.pdfNumber}
+            onChange={(e) => update({ pdfNumber: Number(e.target.value) || 1 })}
+            className="rounded-xl border border-border bg-background px-3 py-2 font-bold tabular-nums outline-none"
+          />
+        </label>
+        <p className="col-span-2 text-[11px] font-semibold text-accent-foreground">
+          Codice generato per i quesiti:{" "}
+          <span className="font-mono font-black">{settings.role}{String(settings.pdfNumber).padStart(2, "0")}N01</span>,{" "}
+          <span className="font-mono font-black">{settings.role}{String(settings.pdfNumber).padStart(2, "0")}N02</span>...
+        </p>
+      </div>
+
       <label className="flex cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border px-3 py-5 text-center font-bold text-muted-foreground">
         <FileText className="size-5 shrink-0" aria-hidden />
         <span className="truncate">{file ? file.name : "Scegli il PDF del libretto"}</span>
@@ -134,7 +169,12 @@ export function PdfImport() {
           onChange={(e) => {
             const f = e.target.files?.[0] ?? null
             setFile(f)
-            if (f && !name) setName(f.name.replace(/\.pdf$/i, ""))
+            if (f) {
+              const base = f.name.replace(/\.pdf$/i, "")
+              setName(base)
+              const inferred = inferPdfNumber(base)
+              update({ pdfNumber: inferred })
+            }
             e.target.value = ""
           }}
         />
@@ -151,12 +191,11 @@ export function PdfImport() {
       </label>
 
       <label className="mt-3 flex items-start gap-3 rounded-2xl bg-secondary p-3 text-sm">
-        <input type="checkbox" checked={dedicated} onChange={(e) => setDedicated(e.target.checked)} className="mt-0.5 size-5 accent-[var(--primary)]" />
+        <input type="checkbox" checked={dedicated} onChange={(e) => setDedicated(e.target.checked)} className="mt-0.5 size-5 accent-primary" />
         <span>
           <span className="block font-bold">Crea anche uno spazio dedicato</span>
           <span className="text-muted-foreground">
-            Le domande vanno sempre nella banca dati generale. Con questa opzione trovi anche la prova completa con il suo nome
-            nell&apos;archivio, giocabile da sola.
+            Tutte le domande andranno nell&apos;archivio generale contrassegnate con il loro codice univoco.
           </span>
         </span>
       </label>

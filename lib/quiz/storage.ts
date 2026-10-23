@@ -16,7 +16,6 @@ function notify(key: string) {
   listeners.get(key)?.forEach((l) => l())
 }
 
-/** Loads a key from IndexedDB once, migrating the old localStorage value if present. */
 export function loadStore<T>(key: string, fallback: T): Promise<T> {
   if (cache.has(key)) return Promise.resolve(cache.get(key) as T)
   if (!loading.has(key)) {
@@ -55,7 +54,6 @@ function persist(key: string, value: unknown) {
   return next
 }
 
-/** Safe read-modify-write usable outside React (background jobs). */
 export async function updateStore<T>(key: string, fallback: T, fn: (prev: T) => T) {
   const prev = await loadStore(key, fallback)
   const next = fn((cache.get(key) as T) ?? prev)
@@ -91,22 +89,11 @@ export function usePersistent<T>(key: string, fallback: T) {
   return [value, set] as const
 }
 
-export function useStoreReady(key: string) {
-  return useSyncExternalStore(
-    (cb) => {
-      if (!listeners.has(key)) listeners.set(key, new Set())
-      listeners.get(key)!.add(cb)
-      return () => listeners.get(key)?.delete(cb)
-    },
-    () => cache.has(key),
-    () => false,
-  )
-}
-
 const EMPTY_QUESTIONS: Question[] = []
 const EMPTY_ATTEMPTS: Attempt[] = []
 const EMPTY_PROGRESS: Record<string, QuestionProgress> = {}
 const EMPTY_SIMULATIONS: Simulation[] = []
+const EMPTY_DELETED_SEEDS: string[] = []
 
 export const KEYS = {
   questions: "questions",
@@ -115,6 +102,7 @@ export const KEYS = {
   lastConfig: "last-config",
   simulations: "simulations",
   settings: "ai-settings",
+  deletedSeedIds: "deleted-seed-ids",
 } as const
 
 export const useImportedQuestions = () => usePersistent(KEYS.questions, EMPTY_QUESTIONS)
@@ -123,17 +111,20 @@ export const useProgress = () => usePersistent(KEYS.progress, EMPTY_PROGRESS)
 export const useLastConfig = () => usePersistent<QuizConfig | null>(KEYS.lastConfig, null)
 export const useSimulations = () => usePersistent(KEYS.simulations, EMPTY_SIMULATIONS)
 export const useSettings = () => usePersistent<AiSettings>(KEYS.settings, DEFAULT_SETTINGS)
+export const useDeletedSeedIds = () => usePersistent<string[]>(KEYS.deletedSeedIds, EMPTY_DELETED_SEEDS)
 
 export const updateQuestions = (fn: (prev: Question[]) => Question[]) =>
   updateStore(KEYS.questions, EMPTY_QUESTIONS, fn)
+export const updateDeletedSeedIds = (fn: (prev: string[]) => string[]) =>
+  updateStore(KEYS.deletedSeedIds, EMPTY_DELETED_SEEDS, fn)
 export const updateSimulations = (fn: (prev: Simulation[]) => Simulation[]) =>
   updateStore(KEYS.simulations, EMPTY_SIMULATIONS, fn)
+
 export const loadSettings = async (): Promise<AiSettings> => {
   const s = await loadStore<AiSettings>(KEYS.settings, DEFAULT_SETTINGS)
   return { ...DEFAULT_SETTINGS, ...s }
 }
 
-/** Upserts questions by id. */
 export const upsertQuestions = (qs: Question[]) =>
   updateQuestions((prev) => {
     const map = new Map(prev.map((q) => [q.id, q]))

@@ -222,14 +222,21 @@ export function QuizRunner({
 
         <div className="flex gap-3 px-1 py-2">
           <span className="text-2xl font-black text-primary">{index + 1}.</span>
-          <p className="text-pretty text-lg font-bold leading-snug text-secondary-foreground">{current.q.text}</p>
-          {current.q.sourcePdf && (
-            <p className="mt-1 truncate text-[11px] font-semibold text-muted-foreground">
-              {current.q.sourcePdf}
-              {current.q.page ? ` · p. ${current.q.page}` : ""}
-              {current.q.number ? ` · n. ${current.q.number}` : ""}
-            </p>
-          )}
+          <div className="flex-1">
+            {current.q.code && (
+              <span className="mb-1 inline-block rounded-md bg-primary/20 px-2 py-0.5 font-mono text-xs font-black text-primary">
+                {current.q.code}
+              </span>
+            )}
+            <p className="text-pretty text-lg font-bold leading-snug text-secondary-foreground">{current.q.text}</p>
+            {current.q.sourcePdf && (
+              <p className="mt-1 truncate text-[11px] font-semibold text-muted-foreground">
+                {current.q.sourcePdf}
+                {current.q.page ? ` · p. ${current.q.page}` : ""}
+                {current.q.number ? ` · n. ${current.q.number}` : ""}
+              </p>
+            )}
+          </div>
         </div>
 
         {candidateMode && (

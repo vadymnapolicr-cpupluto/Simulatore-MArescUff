@@ -4,7 +4,13 @@ import { useMemo, useState } from "react"
 import { applyAttemptToProgress, buildSession, gradeSession } from "@/lib/quiz/engine"
 import { SEED_QUESTIONS } from "@/lib/quiz/seed-questions"
 import { OFFICIAL_CONFIG } from "@/lib/quiz/subjects"
-import { useAttempts, useImportedQuestions, useLastConfig, useProgress } from "@/lib/quiz/storage"
+import {
+  useAttempts,
+  useDeletedSeedIds,
+  useImportedQuestions,
+  useLastConfig,
+  useProgress,
+} from "@/lib/quiz/storage"
 import { isSolved, type AnswerState, type Attempt, type Question, type QuizConfig, type QuizSession, type Simulation } from "@/lib/quiz/types"
 import { ArchiveScreen } from "./archive-screen"
 import { CustomBuilder } from "./custom-builder"
@@ -26,15 +32,25 @@ type View =
 export function SimulatorApp() {
   const [view, setView] = useState<View>({ name: "home" })
   const [imported, setImported] = useImportedQuestions()
+  const [deletedSeedIds] = useDeletedSeedIds()
   const [attempts, setAttempts] = useAttempts()
   const [progress, setProgress] = useProgress()
   const [lastConfig, setLastConfig] = useLastConfig()
 
   const bank = useMemo(() => {
-    const map = new Map(SEED_QUESTIONS.map((q) => [q.id, q]))
-    for (const q of imported) map.set(q.id, q)
+    const deletedSet = new Set(deletedSeedIds)
+    const map = new Map<string, Question>()
+    for (const q of SEED_QUESTIONS) {
+      if (!deletedSet.has(q.id)) {
+        map.set(q.id, q)
+      }
+    }
+    for (const q of imported) {
+      map.set(q.id, q)
+    }
     return [...map.values()]
-  }, [imported])
+  }, [imported, deletedSeedIds])
+
   const bankById = useMemo(() => new Map(bank.map((q) => [q.id, q])), [bank])
   const playable = useMemo(() => bank.filter(isSolved), [bank])
   const importedIds = useMemo(() => new Set(imported.map((q) => q.id)), [imported])
