@@ -54,36 +54,88 @@ function parseJson(input: string): ImportResult {
   } catch {
     return { questions: [], errors: ["JSON non valido."] }
   }
-  const list = Array.isArray(data) ? data : (data as { questions?: unknown[] }).questions
-  if (!Array.isArray(list)) return { questions: [], errors: ["Atteso un array di domande."] }
+
+  let list: unknown[] | undefined
+  if (Array.isArray(data)) {
+    list = data
+  } else if (data && typeof data === "object") {
+    const obj = data as Record<string, unknown>
+    if (Array.isArray(obj.questions)) list = obj.questions
+    else if (Array.isArray(obj.domande)) list = obj.domande
+    else if (Array.isArray(obj.data)) list = obj.data
+  }
+
+  if (!Array.isArray(list)) return { questions: [], errors: ["Atteso un array o un oggetto con lista 'questions'."] }
+
   const questions: Question[] = []
   const errors: string[] = []
+  const currentBatchId = `batch-import-${Date.now()}`
+
   list.forEach((item, i) => {
+    if (!item || typeof item !== "object") {
+      errors.push(`#${i + 1}: elemento non valido.`)
+      return
+    }
     const o = item as Record<string, unknown>
     const subject = toSubject(o.subject ?? o.materia)
-    const text = (o.text ?? o.domanda) as string | undefined
-    const options = (o.options ?? o.risposte) as string[] | undefined
-    const correct = o.correctIndex ?? o.corretta
-    if (!subject) return errors.push(`#${i + 1}: materia mancante o non riconosciuta.`)
-    if (!text || typeof text !== "string") return errors.push(`#${i + 1}: testo mancante.`)
-    if (!Array.isArray(options) || options.length < 2) return errors.push(`#${i + 1}: servono almeno 2 risposte.`)
-    let correctIndex = typeof correct === "number" ? correct : -1
-    if (typeof correct === "string") {
-      correctIndex = /^[A-Za-z]$/.test(correct) ? correct.toUpperCase().charCodeAt(0) - 65 : options.indexOf(correct)
+    const text = ((o.text ?? o.domanda) as string | undefined)?.trim()
+    const rawOptions = (o.options ?? o.risposte) as unknown[] | undefined
+
+    if (!subject) {
+      errors.push(`#${i + 1}: materia mancante o non riconosciuta.`)
+      return
     }
-    if (correctIndex < 0 || correctIndex >= options.length) return errors.push(`#${i + 1}: risposta corretta non valida.`)
+    if (!text) {
+      errors.push(`#${i + 1}: testo della domanda mancante.`)
+      return
+    }
+    if (!Array.isArray(rawOptions) || rawOptions.length < 2) {
+      errors.push(`#${i + 1}: servono almeno 2 risposte.`)
+      return
+    }
+
+    const options = rawOptions.map(String).map((s) => s.trim())
+    const correct = o.correctIndex ?? o.corretta ?? o.correctLetter
+
+    let correctIndex = -1
+    if (typeof correct === "number") {
+      correctIndex = correct >= 0 && correct < options.length ? correct : -1
+    } else if (typeof correct === "string" && correct.trim()) {
+      const c = correct.trim().toUpperCase()
+      if (/^[A-Z]$/.test(c)) {
+        const idx = c.charCodeAt(0) - 65
+        correctIndex = idx >= 0 && idx < options.length ? idx : -1
+      } else {
+        correctIndex = options.indexOf(correct.trim())
+      }
+    }
+
+    const code = ((o.code ?? o.codice) as string | undefined)?.trim().toUpperCase()
+    const id = (o.id as string | undefined)?.trim() || (code ? `q-${code.toLowerCase()}` : `imp-${hash(subject + text)}`)
+    const num = typeof o.number === "number" ? o.number : typeof o.numero === "number" ? o.numero : undefined
+    const page = typeof o.page === "number" ? o.page : typeof o.pagina === "number" ? o.pagina : undefined
+
     questions.push({
-      id: (o.id as string) ?? `imp-${hash(subject + text)}`,
+      id,
+      code: code || undefined,
       subject,
       difficulty: toDifficulty(o.difficulty ?? o.difficolta),
-      topic: (o.topic ?? o.argomento) as string | undefined,
+      topic: ((o.topic ?? o.argomento) as string | undefined)?.trim() || undefined,
       text,
-      options: options.map(String),
+      options,
       correctIndex,
-      explanation: (o.explanation ?? o.spiegazione) as string | undefined,
-      image: o.image as string | undefined,
+      explanation: ((o.explanation ?? o.spiegazione) as string | undefined)?.trim() || undefined,
+      image: ((o.image ?? o.immagine) as string | undefined) || undefined,
+      number: num,
+      page,
+      sourcePdf: ((o.sourcePdf ?? o.pdf) as string | undefined)?.trim() || undefined,
+      sourceName: ((o.sourceName ?? o.prova) as string | undefined)?.trim() || undefined,
+      batchId: (o.batchId as string | undefined)?.trim() || currentBatchId,
+      source: "manuale",
+      updatedAt: Date.now(),
     })
   })
+
   return { questions, errors }
 }
 
@@ -111,22 +163,28 @@ function parseText(input: string): ImportResult {
       options: optionLines.map((l) => l.replace(/^\*\s*/, "")),
       correctIndex,
       explanation,
+      batchId: `batch-import-${Date.now()}`,
+      updatedAt: Date.now(),
     })
   })
   return { questions, errors }
 }
 
-export const JSON_EXAMPLE = `[
-  {
-    "materia": "logica",
-    "difficolta": "difficile",
-    "argomento": "Serie numeriche",
-    "domanda": "Completa: 1, 1, 2, 3, 5, ...",
-    "risposte": ["7", "8", "9", "6"],
-    "corretta": "B",
-    "spiegazione": "Successione di Fibonacci."
-  }
-]`
+export const JSON_EXAMPLE = `{
+  "app": "Simulatore GdF",
+  "questions": [
+    {
+      "codice": "M05N01",
+      "materia": "logica",
+      "difficolta": "difficile",
+      "argomento": "Serie numeriche",
+      "domanda": "Completa la serie: 1, 1, 2, 3, 5, ...",
+      "risposte": ["7", "8", "9", "6"],
+      "corretta": "B",
+      "spiegazione": "Successione di Fibonacci."
+    }
+  ]
+}`
 
 export const TXT_EXAMPLE = `[storia][facile]
 In che anno è caduto il Muro di Berlino?

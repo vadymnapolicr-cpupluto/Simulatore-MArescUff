@@ -464,23 +464,49 @@ export async function openSimPdfInTab(sim: Simulation, page?: number) {
   return true
 }
 
+/** Esporta qualsiasi lista di domande in formato JSON standard ri-importabile */
 export function exportJson(qs: Question[], fileName: string) {
-  const data = qs.map((q) => ({
-    codice: q.code,
-    numero: q.number,
-    materia: q.subject,
-    difficolta: q.difficulty,
-    argomento: q.topic,
-    domanda: q.text,
-    risposte: q.options,
-    corretta: q.correctIndex >= 0 ? String.fromCharCode(65 + q.correctIndex) : null,
-    spiegazione: q.explanation,
-    immagine: q.image,
-  }))
-  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }))
+  const payload = {
+    app: "Simulatore GdF",
+    exportedAt: new Date().toISOString(),
+    count: qs.length,
+    questions: qs.map((q) => ({
+      id: q.id,
+      codice: q.code ?? null,
+      code: q.code ?? null,
+      materia: q.subject,
+      subject: q.subject,
+      difficolta: q.difficulty,
+      difficulty: q.difficulty,
+      argomento: q.topic ?? null,
+      topic: q.topic ?? null,
+      domanda: q.text,
+      text: q.text,
+      risposte: q.options,
+      options: q.options,
+      corretta: q.correctIndex >= 0 && q.correctIndex < q.options.length ? String.fromCharCode(65 + q.correctIndex) : null,
+      correctIndex: q.correctIndex,
+      spiegazione: q.explanation ?? null,
+      explanation: q.explanation ?? null,
+      immagine: q.image ?? null,
+      image: q.image ?? null,
+      numero: q.number ?? null,
+      number: q.number ?? null,
+      pagina: q.page ?? null,
+      page: q.page ?? null,
+      sourcePdf: q.sourcePdf ?? null,
+      sourceName: q.sourceName ?? null,
+      batchId: q.batchId ?? null,
+    })),
+  }
+
+  const jsonStr = JSON.stringify(payload, null, 2)
+  const blob = new Blob([jsonStr], { type: "application/json;charset=utf-8" })
+  const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
-  a.download = fileName.endsWith(".json") ? fileName : `${fileName}.json`
+  const safeName = fileName.replace(/[^\w.-]+/g, "_")
+  a.download = safeName.endsWith(".json") ? safeName : `${safeName}.json`
   a.click()
   setTimeout(() => URL.revokeObjectURL(url), 5000)
 }

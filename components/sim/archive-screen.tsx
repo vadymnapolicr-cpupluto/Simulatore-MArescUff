@@ -3,7 +3,10 @@
 import {
   Download,
   ExternalLink,
+  FileDown,
+  FileJson,
   FileText,
+  Filter,
   Layers,
   Pencil,
   Play,
@@ -11,8 +14,10 @@ import {
   Search,
   Sparkles,
   Trash2,
+  Upload,
 } from "lucide-react"
-import { useMemo, useState } from "react"
+import { useMemo, useRef, useState } from "react"
+import { parseQuestions } from "@/lib/quiz/import"
 import { useJobs } from "@/lib/quiz/jobs"
 import { deleteSimulation, downloadSimPdf, exportJson, openSimPdfInTab, runAiSolve } from "@/lib/quiz/pipeline"
 import { DEFAULT_SETTINGS } from "@/lib/quiz/prompts"
@@ -36,6 +41,7 @@ import { Section, Segmented, TopBar } from "./primitives"
 const PAGE = 40
 
 type Tab = "domande" | "prove"
+type ExportScope = "tutte" | "filtrate" | "materia" | "codice" | "risolte" | "non-risolte"
 
 export function ArchiveScreen({
   bank,
@@ -61,6 +67,13 @@ export function ArchiveScreen({
   const [limit, setLimit] = useState(PAGE)
   const [editing, setEditing] = useState<string | null>(null)
   const [manageOpen, setManageOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+
+  // Stati del pannello di esportazione
+  const [exportScope, setExportScope] = useState<ExportScope>("tutte")
+  const [exportSubject, setExportSubject] = useState<SubjectId>("logica")
+  const [exportCodePrefix, setExportCodePrefix] = useState<string>("")
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const simById = useMemo(() => new Map(sims.map((s) => [s.id, s])), [sims])
   const pdfNames = useMemo(() => [...new Set(bank.map((q) => q.sourcePdf).filter((x): x is string => !!x))].sort(), [bank])
@@ -76,6 +89,13 @@ export function ArchiveScreen({
     }
     return [...set].sort()
   }, [bank])
+
+  // Seleziona il primo codice prefisso se non ancora impostato
+  useMemo(() => {
+    if (!exportCodePrefix && codePrefixes.length > 0) {
+      setExportCodePrefix(codePrefixes[0])
+    }
+  }, [codePrefixes, exportCodePrefix])
 
   // Trova l'ultimo batch di aggiunta in blocco
   const lastBatchId = useMemo(() => {
@@ -100,10 +120,63 @@ export function ArchiveScreen({
       .sort((a, b) => (a.code ?? "").localeCompare(b.code ?? "") || (a.number ?? 0) - (b.number ?? 0))
   }, [bank, query, source, subject, onlyUnsolved])
 
+  // Calcolo delle domande da esportare in base al filtro scelto nel modal
+  const exportTargetQuestions = useMemo(() => {
+    switch (exportScope) {
+      case "filtrate":
+        return filtered
+      case "materia":
+        return bank.filter((q) => q.subject === exportSubject)
+      case "codice":
+        return exportCodePrefix ? bank.filter((q) => q.code?.startsWith(exportCodePrefix)) : []
+      case "risolte":
+        return bank.filter(isSolved)
+      case "non-risolte":
+        return bank.filter((q) => !isSolved(q))
+      case "tutte":
+      default:
+        return bank
+    }
+  }, [exportScope, bank, filtered, exportSubject, exportCodePrefix])
+
+  const handleExecuteExport = () => {
+    if (exportTargetQuestions.length === 0) {
+      alert("Nessuna domanda corrisponde al filtro di esportazione selezionato.")
+      return
+    }
+    const dateStr = new Date().toISOString().slice(0, 10)
+    let fileName = `quiz-gdf-${dateStr}`
+    if (exportScope === "filtrate") fileName = `quiz-gdf-filtrate-${dateStr}`
+    else if (exportScope === "materia") fileName = `quiz-gdf-${exportSubject}-${dateStr}`
+    else if (exportScope === "codice") fileName = `quiz-gdf-${exportCodePrefix}-${dateStr}`
+    else if (exportScope === "risolte") fileName = `quiz-gdf-risolte-${dateStr}`
+    else if (exportScope === "non-risolte") fileName = `quiz-gdf-senza-soluzione-${dateStr}`
+
+    exportJson(exportTargetQuestions, fileName)
+    setExportOpen(false)
+  }
+
+  // Importazione diretta da file JSON
+  const handleDirectJsonImport = async (file: File | undefined) => {
+    if (!file) return
+    try {
+      const text = await file.text()
+      const { questions, errors } = parseQuestions(text)
+      if (questions.length === 0) {
+        alert(errors[0] || "Nessun quesito valido trovato nel file.")
+        return
+      }
+      await upsertQuestions(questions)
+      alert(`Importate con successo ${questions.length} domande dal file JSON!`)
+      setExportOpen(false)
+    } catch (e) {
+      alert(`Errore lettura file: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  }
+
   const questionsOf = (simId: string) =>
     bank.filter((q) => q.simulationId === simId).sort((a, b) => (a.number ?? 0) - (b.number ?? 0))
 
-  // Svuota archivio totale: cancella tutte le domande importate E nasconde tutte le domande seed
   const handlePurgeAll = async () => {
     if (!confirm("ATTENZIONE: Stai per SVUOTARE COMPLETAMENTE L'ARCHIVIO (tutte le domande, sia importate che predefinite verranno rimosse).\n\nConfermi?")) return
     await updateQuestions(() => [])
@@ -111,13 +184,11 @@ export function ArchiveScreen({
     setManageOpen(false)
   }
 
-  // Ripristina le domande predefinite
   const handleRestoreSeeds = async () => {
     await updateDeletedSeedIds(() => [])
     alert("Domande predefinite ripristinate con successo!")
   }
 
-  // Elimina ultimo blocco importato
   const handlePurgeLastBatch = async () => {
     if (!lastBatchId) {
       alert("Nessun blocco recente tracciato da eliminare.")
@@ -128,7 +199,6 @@ export function ArchiveScreen({
     await updateQuestions((prev) => prev.filter((q) => q.batchId !== lastBatchId))
   }
 
-  // Elimina per codice prefisso (es: tutti i quesiti M05)
   const handlePurgeByCode = async (prefix: string) => {
     const toRemove = bank.filter((q) => q.code?.startsWith(prefix))
     if (!confirm(`Eliminare tutte le ${toRemove.length} domande con codice ${prefix}...?`)) return
@@ -137,7 +207,6 @@ export function ArchiveScreen({
     await updateDeletedSeedIds((prev) => [...new Set([...prev, ...toRemove.filter((q) => q.id.startsWith("seed-") || q.id.startsWith("gen-")).map((q) => q.id)])])
   }
 
-  // Elimina per materia
   const handlePurgeBySubject = async (sub: SubjectId) => {
     const toRemove = bank.filter((q) => q.subject === sub)
     if (!confirm(`Eliminare tutte le ${toRemove.length} domande di ${SUBJECT_SHORT[sub]}?`)) return
@@ -146,7 +215,6 @@ export function ArchiveScreen({
     await updateDeletedSeedIds((prev) => [...new Set([...prev, ...toRemove.filter((q) => q.id.startsWith("seed-") || q.id.startsWith("gen-")).map((q) => q.id)])])
   }
 
-  // Elimina singola domanda
   const handleDeleteSingle = async (id: string) => {
     await updateQuestions((prev) => prev.filter((x) => x.id !== id))
     if (id.startsWith("seed-") || id.startsWith("gen-")) {
@@ -161,21 +229,197 @@ export function ArchiveScreen({
         title="Archivio quiz"
         onBack={onBack}
         right={
-          <button
-            type="button"
-            onClick={() => setManageOpen((v) => !v)}
-            aria-label="Gestione e svuota archivio"
-            className={cn(
-              "flex size-10 items-center justify-center rounded-full border transition",
-              manageOpen ? "border-destructive bg-destructive text-white" : "border-border bg-secondary text-destructive",
-            )}
-          >
-            <Trash2 className="size-5" />
-          </button>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => {
+                setExportOpen((v) => !v)
+                setManageOpen(false)
+              }}
+              title="Esporta o importa quiz JSON"
+              aria-label="Esporta o importa quiz"
+              className={cn(
+                "flex size-10 items-center justify-center rounded-full border transition",
+                exportOpen ? "border-primary bg-primary text-primary-foreground" : "border-border bg-secondary text-primary",
+              )}
+            >
+              <FileDown className="size-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setManageOpen((v) => !v)
+                setExportOpen(false)
+              }}
+              title="Gestione e svuota archivio"
+              aria-label="Gestione e svuota archivio"
+              className={cn(
+                "flex size-10 items-center justify-center rounded-full border transition",
+                manageOpen ? "border-destructive bg-destructive text-white" : "border-border bg-secondary text-destructive",
+              )}
+            >
+              <Trash2 className="size-5" />
+            </button>
+          </div>
         }
       />
 
       <div className="flex flex-col gap-4 px-4">
+        {/* Input file nascosto per importazione diretta JSON */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".json,application/json"
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            void handleDirectJsonImport(f)
+            e.target.value = ""
+          }}
+        />
+
+        {/* Modal / Pannello Esporta Quiz con Filtri */}
+        {exportOpen && (
+          <div className="flex flex-col gap-3 rounded-3xl border border-primary/40 bg-card p-4 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <FileJson className="size-5 text-primary" />
+                <h3 className="text-sm font-black">Esporta o Importa Quiz (JSON)</h3>
+              </div>
+              <button type="button" onClick={() => setExportOpen(false)} className="text-xs font-bold text-muted-foreground">
+                Chiudi
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Esporta i quiz in un file JSON universale completo di codice, risposte, spiegazioni e immagini, pronto per essere ri-importato.
+            </p>
+
+            <div className="flex flex-col gap-1.5 text-xs font-bold">
+              <span className="text-muted-foreground uppercase text-[10px] tracking-wider">Cosa vuoi esportare:</span>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setExportScope("tutte")}
+                  className={cn(
+                    "rounded-xl border p-2 text-left font-bold transition",
+                    exportScope === "tutte" ? "border-primary bg-accent text-accent-foreground" : "border-border bg-secondary",
+                  )}
+                >
+                  Tutto l&apos;archivio ({bank.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportScope("filtrate")}
+                  className={cn(
+                    "rounded-xl border p-2 text-left font-bold transition",
+                    exportScope === "filtrate" ? "border-primary bg-accent text-accent-foreground" : "border-border bg-secondary",
+                  )}
+                >
+                  Filtri a schermo ({filtered.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportScope("risolte")}
+                  className={cn(
+                    "rounded-xl border p-2 text-left font-bold transition",
+                    exportScope === "risolte" ? "border-primary bg-accent text-accent-foreground" : "border-border bg-secondary",
+                  )}
+                >
+                  Solo risolte ({bank.filter(isSolved).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportScope("non-risolte")}
+                  className={cn(
+                    "rounded-xl border p-2 text-left font-bold transition",
+                    exportScope === "non-risolte" ? "border-primary bg-accent text-accent-foreground" : "border-border bg-secondary",
+                  )}
+                >
+                  Senza soluzione ({bank.filter((q) => !isSolved(q)).length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExportScope("materia")}
+                  className={cn(
+                    "rounded-xl border p-2 text-left font-bold transition",
+                    exportScope === "materia" ? "border-primary bg-accent text-accent-foreground" : "border-border bg-secondary",
+                  )}
+                >
+                  Per materia...
+                </button>
+                {codePrefixes.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setExportScope("codice")}
+                    className={cn(
+                      "rounded-xl border p-2 text-left font-bold transition",
+                      exportScope === "codice" ? "border-primary bg-accent text-accent-foreground" : "border-border bg-secondary",
+                    )}
+                  >
+                    Per codice PDF...
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {exportScope === "materia" && (
+              <div className="flex flex-col gap-1 text-xs">
+                <span className="font-bold text-muted-foreground">Scegli materia:</span>
+                <select
+                  value={exportSubject}
+                  onChange={(e) => setExportSubject(e.target.value as SubjectId)}
+                  className="rounded-xl border border-border bg-secondary px-3 py-2 text-sm outline-none"
+                >
+                  {SUBJECTS.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label} ({bank.filter((q) => q.subject === s.id).length} domande)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {exportScope === "codice" && (
+              <div className="flex flex-col gap-1 text-xs">
+                <span className="font-bold text-muted-foreground">Scegli codice PDF:</span>
+                <select
+                  value={exportCodePrefix}
+                  onChange={(e) => setExportCodePrefix(e.target.value)}
+                  className="rounded-xl border border-border bg-secondary px-3 py-2 font-mono text-sm outline-none"
+                >
+                  {codePrefixes.map((pfx) => (
+                    <option key={pfx} value={pfx}>
+                      {pfx} ({bank.filter((q) => q.code?.startsWith(pfx)).length} domande)
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className="rounded-xl bg-secondary/80 p-2.5 text-xs font-semibold text-secondary-foreground">
+              Verranno esportate: <strong className="text-primary">{exportTargetQuestions.length}</strong> domande in formato JSON standard.
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={handleExecuteExport}
+                disabled={exportTargetQuestions.length === 0}
+                className="flex flex-1 items-center justify-center gap-2 rounded-2xl bg-primary py-2.5 text-xs font-black text-primary-foreground disabled:opacity-50"
+              >
+                <Download className="size-4" /> Scarica JSON ({exportTargetQuestions.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex items-center justify-center gap-1.5 rounded-2xl border border-border bg-secondary px-3 py-2.5 text-xs font-bold text-secondary-foreground"
+              >
+                <Upload className="size-4" /> Importa JSON
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Pannello svuota archivio ed eliminazioni selettive */}
         {manageOpen && (
           <div className="flex flex-col gap-3 rounded-3xl border border-destructive/40 bg-card p-4 shadow-xl">

@@ -1,6 +1,6 @@
 "use client"
 
-import { FileUp, Trash2 } from "lucide-react"
+import { FileJson, FileUp, Trash2 } from "lucide-react"
 import { useState } from "react"
 import { JSON_EXAMPLE, TXT_EXAMPLE, parseQuestions } from "@/lib/quiz/import"
 import { SUBJECTS } from "@/lib/quiz/subjects"
@@ -28,7 +28,7 @@ export function ImportScreen({
     if (questions.length) onImport(questions)
     setMessage({
       ok: questions.length > 0,
-      text: questions.length ? `${questions.length} domande importate.` : "Nessuna domanda importata.",
+      text: questions.length ? `${questions.length} domande importate con successo!` : "Nessuna domanda valida trovata.",
       errors: errors.slice(0, 5),
     })
     if (questions.length) setText("")
@@ -45,10 +45,13 @@ export function ImportScreen({
       <main className="mx-auto flex max-w-lg flex-col gap-4 px-3 pt-4">
         <PdfImport />
 
-        <Section icon={FileUp} title="Incolla o carica un file">
-          <label className="mb-3 flex cursor-pointer items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border py-5 font-bold text-muted-foreground">
-            <FileUp className="size-5" aria-hidden />
-            Scegli file .json o .txt
+        <Section icon={FileUp} title="Incolla o carica un file (JSON / Backup)">
+          <label className="mb-3 flex cursor-pointer flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-border py-5 text-center font-bold text-muted-foreground transition hover:border-primary">
+            <div className="flex items-center gap-2 text-primary">
+              <FileJson className="size-6" />
+              <span className="text-sm font-black">Carica file JSON esportato o backup</span>
+            </div>
+            <span className="text-xs text-muted-foreground">Supporta file .json esportati dall&apos;Archivio o file di testo .txt</span>
             <input
               type="file"
               accept=".json,.txt,application/json,text/plain"
@@ -56,6 +59,7 @@ export function ImportScreen({
               onChange={(e) => onFile(e.target.files?.[0])}
             />
           </label>
+
           <label htmlFor="import-text" className="sr-only">
             Testo da importare
           </label>
@@ -64,17 +68,18 @@ export function ImportScreen({
             value={text}
             onChange={(e) => setText(e.target.value)}
             rows={8}
-            placeholder="Incolla qui JSON o testo generato dall'AI..."
+            placeholder="Incolla qui JSON o testo generato..."
             className="w-full rounded-2xl border border-border bg-secondary p-3 font-mono text-sm outline-none focus:border-primary"
           />
           <PrimaryButton className="mt-3 w-full" disabled={!text.trim()} onClick={() => run(text)}>
-            Importa
+            Importa contenuto
           </PrimaryButton>
+
           {message && (
             <div role="status" className="mt-3 text-sm">
               <p className={message.ok ? "font-bold text-success" : "font-bold text-destructive"}>{message.text}</p>
               {message.errors.map((e) => (
-                <p key={e} className="text-muted-foreground">
+                <p key={e} className="text-xs text-muted-foreground">
                   {e}
                 </p>
               ))}
@@ -82,26 +87,25 @@ export function ImportScreen({
           )}
         </Section>
 
-        <Section title="Formato">
+        <Section title="Formato supportato">
           <Segmented
             label="Formato esempio"
             value={format}
             onChange={setFormat}
             options={[
-              { value: "json", label: "JSON" },
-              { value: "txt", label: "Testo" },
+              { value: "json", label: "JSON (Completo)" },
+              { value: "txt", label: "Testo rapido" },
             ]}
           />
-          <pre className="mt-3 overflow-x-auto rounded-2xl bg-secondary p-3 text-xs leading-relaxed text-secondary-foreground">
+          <pre className="mt-3 overflow-x-auto rounded-2xl bg-secondary p-3 text-xs leading-relaxed text-secondary-foreground font-mono">
             {format === "json" ? JSON_EXAMPLE : TXT_EXAMPLE}
           </pre>
-          <p className="mt-3 text-sm text-muted-foreground">
-            Materie: {SUBJECTS.map((s) => s.id).join(", ")}. Difficoltà: facile o difficile. Nel formato testo la
-            risposta corretta inizia con *, la spiegazione con {">"}.
+          <p className="mt-3 text-xs text-muted-foreground">
+            I file JSON esportati dall&apos;Archivio preservano automaticamente codici concorso (es. M05N67), materia, livello, spiegazioni e soluzioni.
           </p>
         </Section>
 
-        <Section title="Domande importate">
+        <Section title="Riepilogo domande caricate">
           <ul className="grid grid-cols-2 gap-2 text-sm">
             {SUBJECTS.map((s) => (
               <li key={s.id} className="flex justify-between rounded-xl bg-secondary px-3 py-2">
